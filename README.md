@@ -59,6 +59,10 @@ releng's exact known-good command line instead of guessing at `archisolabel=`.
   `systemd-stub` reads EFI LoadOptions and appends them to the baked-in command
   line, so launching `BOOTX64.EFI` from the shell with arguments works.
 - **No BIOS boot at all.** Anything older than roughly 2012 will not boot this.
+- **No file system transposition.** The UKI is staged into the FAT image only,
+  not into the ISO 9660 tree, which keeps ~90 MiB of duplicate out of the
+  image. Unpacking the ISO onto a FAT USB stick therefore does not produce
+  something bootable — write it with `dd`.
 - **Secure Boot fails.** The UKI is unsigned. `./test.sh -s` demonstrates it.
   Signing with `sbctl` is a later phase.
 

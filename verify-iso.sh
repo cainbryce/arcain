@@ -34,7 +34,11 @@ readonly deps=(
     'fdisk:util-linux'
 )
 
+# GitHub's per-asset cap on a release.
+readonly release_asset_limit=$(( 2 * 1024 * 1024 * 1024 ))
+
 iso=''
+iso_bytes=0
 failed=0
 
 msg() { printf '\033[1;34m::\033[0m %s\n' "$*"; }
@@ -179,6 +183,17 @@ if osirrox -indev "${iso}" -extract "/${install_dir}/pkglist.x86_64.txt" "${tmp}
     ok "$(wc -l < "${tmp}/pkglist.txt") packages on the image"
 else
     bad "could not read /${install_dir}/pkglist.x86_64.txt from the image"
+fi
+
+# --- 9. release budget ------------------------------------------------------
+# GitHub caps a single release asset at 2 GiB, and the CI release job uploads
+# this file. Catching the overrun here names the cause; catching it in the
+# release job just fails an upload after a full build.
+iso_bytes="$(stat -c %s -- "${iso}")"
+if (( iso_bytes < release_asset_limit )); then
+    ok "$(( iso_bytes / 1048576 )) MiB, within the $(( release_asset_limit / 1073741824 )) GiB release asset limit"
+else
+    bad "$(( iso_bytes / 1048576 )) MiB exceeds GitHub's $(( release_asset_limit / 1073741824 )) GiB release asset limit"
 fi
 
 # --- verdict ----------------------------------------------------------------
