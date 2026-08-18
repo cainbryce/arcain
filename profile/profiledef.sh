@@ -90,10 +90,13 @@ _make_bootmode_uefi.efistub() {
     # an empty one perfectly happily.
     #
     # So the UKI is built into a staging directory and only ever reaches the
-    # FAT image below. That keeps a ~90 MiB duplicate out of the ISO, at the
-    # cost of file system transposition — unpacking this image onto a FAT USB
-    # stick no longer yields a bootable /EFI/BOOT/BOOTX64.EFI. Writing it with
-    # dd, which is how it is actually used, is unaffected.
+    # FAT image below. Measured: that took the ISO from 1673 to 1441 MiB. The
+    # duplicate is large because the initramfs carries linux-firmware and
+    # linux-firmware-marvell, which dominate it.
+    #
+    # The cost is file system transposition — unpacking this image onto a FAT
+    # USB stick no longer yields a bootable /EFI/BOOT/BOOTX64.EFI. Writing it
+    # with dd, which is how it is actually used, is unaffected.
     install -d -m 0755 -- "${isofs_dir}/EFI"
 
     _ukidir="${work_dir}/efistub"
