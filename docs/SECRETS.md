@@ -37,10 +37,11 @@ structure-preserving encryption, and it is worth revisiting if git-crypt's low
 maintenance activity becomes a problem. git-crypt is GPG-only and removing a
 key does not re-encrypt history.
 
-## Setting it up
+## How it was set up
 
-**None of this has been run yet.** `system/` is currently plaintext in the
-history, so this repo must not be pushed until the steps below are done.
+Already done — recorded so it can be rebuilt, and so the ordering constraint is
+not rediscovered the hard way. Access is granted to GPG key
+`EE509FAC493C419D`; adding another machine means adding its key (step 4).
 
 ```sh
 sudo pacman -S --needed git-crypt git-filter-repo
@@ -100,12 +101,22 @@ Do not skip this. The failure mode is silent — an unencrypted `system/` looks
 completely normal in the working tree.
 
 ```sh
-git-crypt status | grep -c '^\s*encrypted:'      # expect the system/ file count
+git-crypt status | awk '{print $1}' | sort | uniq -c   # 'encrypted:' count == files in system/
 
 # The stored blob must be git-crypt's binary format, not readable text.
-git show HEAD:system/generated/identity.txt | head -c 16 | xxd
-#   00000000: 0047 4954 4352 5950 5400 ...   -> "\0GITCRYPT\0", correct
-#   00000000: 686f 7374 6e61 6d65 3d63 ...   -> "hostname=c", STOP
+# od, not xxd: xxd ships with vim and is not always installed.
+git show HEAD:system/generated/identity.txt | head -c 10 | od -c -A none
+#   \0 G I T C R Y P T \0    correct
+#   h o s t n a m e = c      STOP, it is plaintext
+```
+
+And the check that does not depend on reading the filter right — grep the whole
+object database, across every ref, for things that must not be in it:
+
+```sh
+for needle in 'hostname=cain-cachy' '192.168.5' 'valid users = cain'; do
+    git grep -I -c "$needle" $(git rev-list --all) -- system
+done
 ```
 
 Only then:
