@@ -1,0 +1,15 @@
+[Unit]
+Description=Hourly btrfs snapshot
+
+[Timer]
+OnCalendar=hourly
+# Fire on the next boot if the machine was off when a run was due, otherwise a
+# weekend of downtime silently leaves a gap in the timeline.
+Persistent=true
+# Nothing else is scheduled on the hour, but snapshotting during a build is
+# still worth smearing out.
+RandomizedDelaySec=2min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

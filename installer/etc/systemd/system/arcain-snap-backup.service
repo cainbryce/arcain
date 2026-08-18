@@ -1,0 +1,11 @@
+[Unit]
+Description=Send btrfs snapshots to the backup disk
+Documentation=file:///usr/local/bin/arcain-snap
+ConditionPathExists=/etc/arcain/snap.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/arcain-snap backup
+# A full send of a fresh target is long and must not be killed halfway: a
+# partial receive would later look like a valid parent.
+TimeoutStartSec=infinity

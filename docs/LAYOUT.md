@@ -27,9 +27,11 @@ nvme0n1p2   4098 MiB – end       btrfs (existing, label 'games' -> relabel 'sy
               ├─ @srv           /srv
               ├─ @log           /var/log
               ├─ @cache         /var/cache
+              ├─ @tmp           /var/tmp
+              ├─ @containers    /var/lib/containers
               ├─ @snapshots     /.snapshots
-              ├─ SteamLibrary/  (existing, untouched)
-              └─ .nvidia-shadercache/ (existing, untouched)
+              ├─ @steam         /mnt/steam           (was SteamLibrary/)
+              └─ @shadercache   /mnt/shadercache     (was .nvidia-shadercache/)
 ```
 
 Root is ~45 GiB once `/var/cache` is trimmed with `paccache -rk1` (it is 45 GiB
@@ -42,22 +44,26 @@ existing data; no repartitioning.
 
 ```
 sda1        btrfs (existing, label 'Files' -> relabel 'data')
-              ├─ @home          /home        (~158 GiB, media excluded)
-              ├─ SteamLibrary/  (existing, untouched)
-              └─ OllamaModels/  (existing, untouched)
+              ├─ @home          /home                (~158 GiB, media excluded)
+              ├─ @home-cache    /home/cain/.cache
+              ├─ @steam-sata    /mnt/steam-sata      (was SteamLibrary/)
+              └─ @ollama        /var/lib/ollama      (was OllamaModels/)
 ```
 
 ### sdb — media
 
-Wiped. Single btrfs partition, bind-mounted into `$HOME` so XDG paths keep
-working without symlinks:
+Wiped. Single btrfs partition. Subvolumes mount straight onto the XDG paths —
+no bind mounts and no symlinks, because a subvolume can be mounted anywhere:
 
 ```
-sdb1        btrfs, label 'media'   -> /mnt/media
-              ├─ Videos/        bind -> /home/cain/Videos   (137 GiB)
-              ├─ Music/         bind -> /home/cain/Music     (53 GiB)
-              └─ recordings/    OBS captures moved off the NVMe (89 GiB)
+sdb1        btrfs, label 'media'
+              ├─ @videos        /home/cain/Videos            (137 GiB)
+              ├─ @music         /home/cain/Music              (53 GiB)
+              └─ @recordings    /home/cain/Videos/recordings  (89 GiB, OBS)
 ```
+
+The current disk has roughly 60 GiB of loose `.mkv` files sitting directly in
+the root of `nvme0n1p2` alongside `recordings/`; both land in `@recordings`.
 
 ### sdc — backup
 
@@ -65,6 +71,84 @@ Reformatted as a single btrfs volume and used as a `btrfs send | receive`
 target for `@` and `@home` snapshots. This machine has an unresolved silent
 corruption history, so an off-root copy on a disk that can be unplugged is the
 point, not capacity.
+
+## Subvolume policy
+
+A subvolume has to earn its place by satisfying at least one of three tests.
+Everything else stays a plain directory, because each extra subvolume is one
+more thing to mount, snapshot, prune and send.
+
+1. **It must survive a rollback.** Logs from the boot that broke are the reason
+   you are rolling back; restoring them along with `/usr` throws away the
+   evidence.
+2. **It needs different mount options.** Compression and copy-on-write
+   behaviour are set per mount, so anything wanting different settings needs to
+   be separately mountable.
+3. **It is snapshotted or backed up on its own schedule.**
+
+The layout is **flat**: every subvolume is a direct child of subvolid 5, named
+`@…`, and nothing is nested inside `@`. A nested subvolume appears as an empty
+directory inside its parent's snapshot, which makes `btrfs send` streams
+confusing and turns rollback into a multi-step operation instead of a rename.
+
+Two things deliberately stay *inside* `@`:
+
+- **`/var/lib/pacman`.** A rollback that restores `/usr` but not the package
+  database leaves a system whose database lies about what is installed. This is
+  the most common btrfs-on-Arch mistake and it is silent until the next upgrade.
+- **`/boot`.** The initramfs and `/usr/lib/modules/<version>` have to move
+  together, so the plain `/boot` directory rides along with `@`.
+
+### Promoting the existing directories is nearly free
+
+`SteamLibrary/`, `.nvidia-shadercache/` and `OllamaModels/` are plain
+directories today. Turning them into subvolumes does **not** require copying
+553 GiB around: reflink copies work across subvolumes within one btrfs
+filesystem, so
+
+```sh
+btrfs subvolume create /mnt/system/@steam
+cp -a --reflink=always /mnt/system/SteamLibrary/. /mnt/system/@steam/
+rm -rf /mnt/system/SteamLibrary
+```
+
+shares every extent and finishes in seconds at no extra space. The catch is
+that this only holds while the target keeps copy-on-write — see below.
+
+## Mount options
+
+| subvolumes | options |
+| --- | --- |
+| `@`, `@root`, `@srv`, `@log`, `@snapshots` | `noatime,compress=zstd:1,ssd,discard=async,space_cache=v2` |
+| `@cache`, `@tmp`, `@containers`, `@home`, `@home-cache` | same |
+| `@steam`, `@steam-sata`, `@ollama`, `@videos`, `@music`, `@recordings` | `noatime,compress=no,ssd,discard=async,space_cache=v2` |
+| `@shadercache` | `noatime,compress=no,nodatacow` |
+
+**`compress=zstd:1`, not the current `zstd:3`.** Level 1 costs far less CPU per
+write for a modest ratio loss, and a root filesystem is dominated by small
+already-mixed files and by build trees that get rewritten constantly. Level 3
+is worth keeping only if the filesystem is space-constrained, and none of these
+are.
+
+**`compress=no` on the bulk data.** Game assets, GGUF weights and H.264 captures
+are already compressed. btrfs does heuristically bail out on incompressible
+extents, so the win is modest, but it is free.
+
+**`nodatacow` almost nowhere.** It is the obvious "make it fast" knob and it is
+the wrong one here: `nodatacow` also disables checksumming, and this machine has
+an unresolved silent-corruption history (`btrfs-incident-2026-07-09` is still
+sitting on the NVMe). Checksums are the only thing that would catch a repeat.
+It also defeats the reflink promotion above. So it is set on exactly one
+subvolume, `@shadercache`, whose entire contents are a regenerable GPU cache.
+
+**No `autodefrag`.** It rewrites extents, which unshares them from every
+snapshot that referenced them, so on a snapshotted root it shows up as steady
+unexplained space growth.
+
+**No qgroups.** They make every write account against a quota tree and are the
+classic cause of multi-second commit stalls on large filesystems. Nothing here
+needs them: retention is by count and age, not by space accounting. This is
+also the main reason snapper is not the answer — see below.
 
 ## Space check
 
@@ -123,6 +207,92 @@ menu to put them in. Recovery path becomes the arcain ISO: boot it, mount the
 subvolume, roll back, reboot. The fallback UKI covers the other common case
 (initramfs missing a driver after a hardware change), and the firmware's own
 boot menu picks between the two.
+
+## Snapshots
+
+### Why not snapper
+
+snapper is already installed on the current system, and it is already doing
+almost nothing. Its `root` config has `TIMELINE_CREATE="no"` and `QGROUP=""`,
+and `snap-pac` is not installed, so nothing creates snapshots automatically.
+What made it worth having was `limine-snapper-sync` putting bootable snapshots
+in the Limine menu — and the EFI stub decision deletes the boot menu, so that
+integration goes with it.
+
+What is left is a D-Bus daemon, an XML config per subvolume, a cleanup timer,
+and a cleanup algorithm whose space-aware modes want qgroups enabled.
+
+| | snapper + snap-pac | btrbk | own script |
+| --- | --- | --- | --- |
+| packages beyond `btrfs-progs` | `snapper`, `snap-pac`, dbus, boost | `btrbk`, perl | none |
+| daemon | yes | no | no |
+| pacman pre/post | via `snap-pac` | no | one hook file |
+| retention | timeline algorithm | count/age per interval | count/age per tag |
+| wants qgroups | for space-aware cleanup | no | no |
+| `send`/`receive` to `sdc` | no | yes, incremental + resumable | has to be written |
+| rollback | manual | manual | manual |
+
+Rollback is manual in all three, because there is no boot menu to select a
+snapshot from. That removes the one thing snapper was doing for this machine,
+and the remaining requirement — pre/post pacman snapshots, a timeline with
+retention, and incremental `btrfs send` to the backup disk — is a few hundred
+lines against `btrfs-progs`, which is a hard dependency of the install anyway.
+
+**Decision: `arcain-snap`, in this repo.** btrbk is the honest runner-up and is
+the right answer for anyone who wants a maintained tool; its incremental
+send/receive with resume is the part that is genuinely fiddly to reimplement.
+
+### Layout
+
+Snapshots are read-only subvolumes under `@snapshots`, grouped by config:
+
+```
+/.snapshots/
+  ├─ root/
+  │    ├─ 2026-08-18T13-05-00Z-pre/       @ before a pacman transaction
+  │    ├─ 2026-08-18T13-07-11Z-post/      @ after it
+  │    └─ 2026-08-18T14-00-00Z-timeline/
+  └─ home/
+       └─ 2026-08-18T14-00-00Z-timeline/
+```
+
+UTC, sortable, tag in the name. Each carries a small `info` file recording the
+source subvolume, the tag, the pacman command line for `pre`/`post`, and the
+parent used for the last successful `send`.
+
+### Schedule
+
+- **`pre` / `post`** — two pacman hooks. This is the snapshot that actually gets
+  used: an upgrade that breaks the system is the common case, and `pre` is a
+  known-good point from thirty seconds earlier.
+- **`timeline`** — one hourly timer.
+- **Retention** — the last 10 `pre`/`post` pairs, then 24 hourly, 7 daily, 4
+  weekly. Pruned by count and age, never by space accounting.
+- **`backup`** — a daily timer running `btrfs send -p` of the newest `root` and
+  `home` snapshots to `sdc`, falling back to a full send when no common parent
+  can be found on the target. `sdc` is expected to be absent; a missing target
+  is a skip, not a failure.
+
+### Rolling back, and the one thing that does not roll back
+
+With no boot loader there is no menu, so recovery runs from the arcain ISO:
+boot it, mount subvolid 5, rename `@` out of the way, snapshot the chosen
+read-only snapshot back into place as a writable `@`, reboot.
+
+**The UKI is not on btrfs.** It lives on the FAT ESP, so rolling `@` back to
+before a kernel upgrade restores `/usr/lib/modules/<old>` and `/boot/vmlinuz`
+while the ESP still holds a unified kernel image built from the *new* kernel.
+That image will boot and then fail to find its modules.
+
+Two mitigations, both already in this design:
+
+- the `fallback` UKI is built with `-S autodetect`, so it carries a superset of
+  modules and is the entry to pick from the firmware boot menu after a rollback;
+- from the ISO, `arch-chroot` into the restored `@` and run `mkinitcpio -P` to
+  rebuild both UKIs against the kernel that is actually installed there.
+
+`arcain-snap rollback` prints this sequence rather than performing it, because
+it has to run against a filesystem that is not the one it booted from.
 
 ## Desktop: river-classic
 

@@ -1,0 +1,9 @@
+[Unit]
+Description=Timeline btrfs snapshot
+Documentation=file:///usr/local/bin/arcain-snap
+ConditionPathExists=/etc/arcain/snap.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/arcain-snap create -t timeline
+ExecStart=/usr/local/bin/arcain-snap prune

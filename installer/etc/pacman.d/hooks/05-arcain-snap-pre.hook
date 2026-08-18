@@ -1,0 +1,20 @@
+# Snapshot before pacman changes anything. This is the snapshot that actually
+# gets used: an upgrade that breaks the system is the common case, and this is
+# a known-good point from seconds earlier.
+#
+# No AbortOnFail. A failed snapshot is a lost safety net, not a reason to block
+# someone's upgrade.
+
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Operation = Remove
+Type = Package
+Target = *
+
+[Action]
+Description = Snapshotting before this transaction...
+When = PreTransaction
+Depends = btrfs-progs
+NeedsTargets
+Exec = /usr/local/bin/arcain-snap hook pre
