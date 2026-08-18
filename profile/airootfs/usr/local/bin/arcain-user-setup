@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# arcain-user-setup — first-boot identity for a fresh arcain install.
+#
+# Run once, as your user, on the installed system (arcain-install puts it
+# there). Network required. It:
+#
+#   1. generates a machine-local ed25519 SSH key   (~/.ssh/id_ed25519)
+#   2. generates a machine-local ed25519 GPG key   (signing, 2y expiry)
+#   3. writes git identity + sane global defaults, with the signing key in
+#      ~/.config/git/local.conf — per-machine on purpose, dotfiles ignores it
+#   4. waits while you authorize the new public keys on GitHub
+#   5. deploys the dotfiles bare repo over $HOME (bash setup and the rest)
+#
+# Private keys are BORN HERE and never move. No key material is copied from
+# other machines, carried on the ISO, or stored in any repo — authorizing the
+# new public half on GitHub and the VPS is the whole transfer.
+
+set -euo pipefail
+
+# Personal medium, personal defaults. Override via environment if reusing.
+GIT_NAME="${ARCAIN_GIT_NAME:-cainbryce}"
+GIT_EMAIL="${ARCAIN_GIT_EMAIL:-cainbryce208@gmail.com}"
+DOTFILES_REMOTE="${ARCAIN_DOTFILES_REMOTE:-git@github.com:cainbryce/dotfiles.git}"
+readonly GIT_NAME GIT_EMAIL DOTFILES_REMOTE
+readonly gitdir="${HOME}/.dotfiles"
+
+msg()  { printf '\033[1;34m::\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m::\033[0m %s\n' "$*" >&2; }
+die()  { printf '\033[1;31m::\033[0m %s\n' "$*" >&2; exit 1; }
+
+(( EUID != 0 )) || die 'run as your user, not root'
+command -v git &>/dev/null || die 'git missing'
+command -v gpg &>/dev/null || die 'gpg missing'
+
+# --- 1. SSH key ---------------------------------------------------------------
+if [[ -f "${HOME}/.ssh/id_ed25519" ]]; then
+    msg 'SSH key already exists, keeping it'
+else
+    msg 'generating SSH key (pick a passphrase, or empty for none)'
+    ssh-keygen -t ed25519 -C "${GIT_EMAIL} ($(hostnamectl --static 2>/dev/null || hostname))" \
+        -f "${HOME}/.ssh/id_ed25519"
+fi
+
+# --- 2. GPG key -----------------------------------------------------------------
+fingerprint="$(gpg --list-secret-keys --with-colons "${GIT_EMAIL}" 2>/dev/null \
+    | awk -F: '$1 == "fpr" {print $10; exit}')"
+if [[ -n "${fingerprint}" ]]; then
+    msg "GPG key already exists (${fingerprint:0:16}…), keeping it"
+else
+    msg 'generating GPG signing key (pinentry will ask for a passphrase)'
+    gpg --quick-generate-key "${GIT_NAME} <${GIT_EMAIL}>" ed25519 sign 2y
+    fingerprint="$(gpg --list-secret-keys --with-colons "${GIT_EMAIL}" \
+        | awk -F: '$1 == "fpr" {print $10; exit}')"
+fi
+[[ -n "${fingerprint}" ]] || die 'no GPG fingerprint — generation failed?'
+
+# --- 3. git configuration ------------------------------------------------------
+# Portable settings go in ~/.gitconfig; the dotfiles repo tracks that file and
+# will win on deploy, which is fine — the values match. The signing key is
+# per-machine and goes in local.conf, which dotfiles deliberately leaves
+# untracked and ~/.gitconfig includes.
+msg 'writing git config'
+git config --global user.name "${GIT_NAME}"
+git config --global user.email "${GIT_EMAIL}"
+git config --global init.defaultBranch main
+git config --global pull.rebase true
+git config --global rebase.autostash true
+git config --global fetch.prune true
+git config --global push.autoSetupRemote true
+git config --global merge.conflictstyle zdiff3
+# shellcheck disable=SC2088  # git expands ~ in path values itself; the
+# literal tilde matches the tracked .gitconfig so dotfiles deploy sees no diff
+git config --global include.path '~/.config/git/local.conf'
+
+install -d -m 0755 -- "${HOME}/.config/git"
+cat > "${HOME}/.config/git/local.conf" <<CONF
+# Per-machine git config — NOT tracked by dotfiles (untracked on purpose).
+# Included from ~/.gitconfig. Holds this machine's GPG signing key.
+
+[user]
+	signingkey = ${fingerprint}
+[commit]
+	gpgsign = true
+[tag]
+	gpgSign = true
+CONF
+
+# --- 4. authorize --------------------------------------------------------------
+msg 'authorize this machine. new public keys:'
+printf '\n--- SSH (github.com/settings/keys, and the VPS) ---\n'
+cat "${HOME}/.ssh/id_ed25519.pub"
+printf '\n--- GPG (github.com/settings/gpg/new) ---\n'
+gpg --armor --export "${fingerprint}"
+printf '\nVPS:  ssh-copy-id -i ~/.ssh/id_ed25519.pub <host>\n\n'
+read -rp 'press enter once the SSH key is added on GitHub (needed for the dotfiles pull)... '
+
+# --- 5. dotfiles ----------------------------------------------------------------
+# Bare repo over $HOME, --deploy semantics: repo wins, conflicts backed up.
+# Inlined rather than fetching dotfiles-bootstrap, because that script lives
+# inside the repo it would be fetching.
+df() { git --git-dir="${gitdir}" --work-tree="${HOME}" "$@"; }
+
+if [[ -d "${gitdir}" ]]; then
+    msg 'dotfiles already set up, pulling instead'
+    df pull --rebase || warn 'pull failed — resolve by hand with: dotfiles status'
+else
+    msg "cloning ${DOTFILES_REMOTE}"
+    if ! git clone --bare "${DOTFILES_REMOTE}" "${gitdir}"; then
+        die 'clone failed — is the SSH key authorized on GitHub yet?'
+    fi
+    df config core.bare false
+    df config core.worktree "${HOME}"
+    df config status.showUntrackedFiles no
+    df config remote.origin.fetch '+refs/heads/*:refs/remotes/origin/*'
+    df fetch origin --prune
+
+    backup="${HOME}/.dotfiles-backup"
+    co_err="$(mktemp)"
+    if ! df checkout main 2>"${co_err}"; then
+        msg "backing up conflicting files to ${backup}"
+        grep -E '^[[:space:]]' "${co_err}" | sed 's/^[[:space:]]*//' | while IFS= read -r f; do
+            [[ -n "${f}" && -e "${HOME}/${f}" ]] || continue
+            mkdir -p "${backup}/$(dirname "${f}")"
+            mv "${HOME}/${f}" "${backup}/${f}"
+        done
+        df checkout main
+    fi
+    rm -f "${co_err}"
+    df branch --set-upstream-to=origin/main main >/dev/null 2>&1 || true
+    msg 'dotfiles deployed (conflicts, if any, under ~/.dotfiles-backup)'
+fi
+
+if [[ -f "${HOME}/.config/systemd/user/dotfiles-sync.timer" ]]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user enable --now dotfiles-sync.timer 2>/dev/null \
+        && msg 'dotfiles-sync.timer enabled'
+fi
+
+msg 'done. new shell picks up the bash setup; git signs with the new key.'

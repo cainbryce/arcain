@@ -254,6 +254,9 @@ PRESET
         done < "${sysdir}/system/derived/units-system.txt"
     fi
 
+    msg 'first-boot user setup script'
+    install -m 0755 -- /usr/local/bin/arcain-user-setup /mnt/usr/local/bin/arcain-user-setup
+
     msg 'accounts'
     printf 'Set the root password.\n'
     arch-chroot /mnt passwd
@@ -267,6 +270,8 @@ PRESET
 
     msg "done. reboot and pick 'arcain' in the firmware boot menu."
     printf '   next steps on the installed system:\n'
+    printf '   - log in as your user, run: arcain-user-setup\n'
+    printf '     (generates machine-local SSH+GPG keys, git config, pulls dotfiles)\n'
     printf '   - arcain-snap: https://github.com/cainbryce/arcain-snap (make install install-config)\n'
     printf '   - AUR packages: system/derived/packages-aur.txt via an AUR helper\n'
 }
