@@ -5,6 +5,6 @@ Wi-Fi: authenticate with [35miwctl[0m. Ethernet and WLAN over DHCP come up on 
 Rescue: ddrescue, testdisk, partclone, fsarchiver, smartmontools, nvme-cli,
 cryptsetup, btrfs-progs, bcachefs-tools, lvm2, mdadm.
 
-Install: [35marcain-install[0m (not implemented yet — install by hand with
-arch-chroot and genfstab from arch-install-scripts).
+Install: [35marcain-install[0m — 'disks' to list targets, 'plan -d /dev/X' to
+preview, 'apply -d /dev/X -u USER' to install. Wipes the one disk you name.
 

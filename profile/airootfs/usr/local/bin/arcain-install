@@ -109,8 +109,11 @@ validate_target() {
     # Mounted anywhere, or claimed by dm/md/LVM: refuse, do not confirm around.
     parts="$(lsblk -no NAME,MOUNTPOINTS "${dev}" | awk 'NF > 1 {print $1}')"
     [[ -z "${parts}" ]] || die "${dev} has mounted partitions: $(echo "${parts}" | tr '\n' ' ')"
+    # '|| true': on a blank disk the /*/holders glob matches nothing, find
+    # exits non-zero on the unexpanded path, and pipefail + set -e would kill
+    # the script here with no output at all. Found by the QEMU rehearsal.
     holders="$(find "/sys/block/${base}/holders" "/sys/block/${base}"/*/holders \
-        -mindepth 1 -maxdepth 1 2>/dev/null | head -1)"
+        -mindepth 1 -maxdepth 1 2>/dev/null | head -1 || true)"
     [[ -z "${holders}" ]] || die "${dev} is held by ${holders##*/} (dm/md/LVM) — deactivate first"
 }
 
