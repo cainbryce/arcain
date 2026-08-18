@@ -68,7 +68,7 @@ _validate_requirements_bootmode_uefi.efistub() {
 }
 
 _make_bootmode_uefi.efistub() {
-    local _stub _cmdline _ukidir _efi_name
+    local _stub _cmdline _efi_name
 
     _msg_info "Building unified kernel image for EFI stub booting..."
 
@@ -81,10 +81,18 @@ _make_bootmode_uefi.efistub() {
     # is about to stamp on this very image, so the hook finds its own medium
     # regardless of the volume label or the device it was written to.
     _cmdline="archisobasedir=${install_dir} archisosearchuuid=${iso_uuid}"
-
-    _ukidir="${work_dir}/efistub"
     _efi_name="BOOT${uefi_arch[$arch]^^}.EFI"
-    install -d -m 0755 -- "${_ukidir}/EFI/BOOT"
+
+    # The UKI is built into the ISO 9660 tree, not a private staging directory,
+    # for two reasons. _add_common_xorrisofs_options_uefi asks xorrisofs to put
+    # the El Torito boot catalog at 'EFI/boot.cat', which fails with "Cannot
+    # find directory for El Torito boot catalog" unless /EFI exists as a real
+    # directory in the image. And a UKI present in the ISO filesystem is what
+    # lets the image be unpacked onto a FAT USB stick and still boot.
+    #
+    # It costs one duplicate copy of the UKI, since the FAT image below gets
+    # its own. Stock archiso pays the same price for kernel and initramfs.
+    install -d -m 0755 -- "${isofs_dir}/EFI/BOOT"
 
     ukify build \
         --linux="${pacstrap_dir}/boot/vmlinuz-linux-zen" \
@@ -92,26 +100,28 @@ _make_bootmode_uefi.efistub() {
         --stub="${_stub}" \
         --cmdline="${_cmdline}" \
         --os-release="@${pacstrap_dir}/usr/lib/os-release" \
-        --output="${_ukidir}/EFI/BOOT/${_efi_name}"
+        --output="${isofs_dir}/EFI/BOOT/${_efi_name}"
 
     # edk2-shell based UEFI shell. With a single hardcoded boot entry this is
     # the only way to boot with a modified command line: launch the UKI from
     # the shell and pass arguments, which systemd-stub reads from LoadOptions
     # and appends to the baked-in command line (ignored under Secure Boot).
+    # shell*.efi is picked up automatically when it sits at the root.
     if [[ -e "${pacstrap_dir}/usr/share/edk2-shell/${uefi_arch[$arch],,}/Shell_Full.efi" ]]; then
         install -m 0644 -- "${pacstrap_dir}/usr/share/edk2-shell/${uefi_arch[$arch],,}/Shell_Full.efi" \
-            "${_ukidir}/shell${uefi_arch[$arch],,}.efi"
+            "${isofs_dir}/shell${uefi_arch[$arch],,}.efi"
     fi
 
-    # Size and create the FAT image that becomes the EFI system partition,
-    # then populate it. The kernel and initramfs are inside the UKI, so unlike
-    # systemd-boot there is nothing else to copy: no _make_boot_on_fat.
-    efiboot_files=("${_ukidir}/")
-    _make_efibootimg
-    mcopy -s -i "${efibootimg}" "${_ukidir}/EFI" '::/'
-    if compgen -G "${_ukidir}/shell"*'.efi' >/dev/null; then
-        mcopy -i "${efibootimg}" "${_ukidir}/shell"*'.efi' '::/'
+    # Size and create the FAT image that becomes the EFI system partition, then
+    # populate it from the same files. The kernel and initramfs are inside the
+    # UKI, so unlike systemd-boot there is nothing else to copy: no
+    # _make_boot_on_fat.
+    efiboot_files=("${isofs_dir}/EFI")
+    if compgen -G "${isofs_dir}/shell"*'.efi' >/dev/null; then
+        efiboot_files+=("${isofs_dir}/shell"*'.efi')
     fi
+    _make_efibootimg
+    mcopy -s -i "${efibootimg}" "${efiboot_files[@]}" '::/'
 
     _msg_info "Done! EFI stub boot set up successfully."
 }
