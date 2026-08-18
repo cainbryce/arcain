@@ -90,8 +90,15 @@ list_disks() {
     while read -r d; do
         local inuse=''
         lsblk -no MOUNTPOINTS "${d}" | grep -q . && inuse='   [in use — will be refused]'
-        lsblk -dno NAME,SIZE,TRAN,MODEL "${d}" \
-            | awk -v tag="${inuse}" '{printf "/dev/%-9s %8s  %-6s", $1, $2, $3; $1=$2=$3=""; print $0 tag}'
+        # -o with explicit widths and --raw would still collapse the empty
+        # TRAN column; query the fields separately so virtio disks (no TRAN)
+        # do not shift MODEL left. Found in the QEMU rehearsal.
+        printf '%-14s %8s  %-6s %s%s\n' \
+            "${d}" \
+            "$(lsblk -dno SIZE "${d}")" \
+            "$(lsblk -dno TRAN "${d}")" \
+            "$(lsblk -dno MODEL "${d}")" \
+            "${inuse}"
     done < <(candidate_disks)
     if [[ -n "${boot}" ]]; then
         printf '(excluded: /dev/%s — the medium this is running from)\n' "${boot}"
@@ -115,6 +122,30 @@ validate_target() {
     holders="$(find "/sys/block/${base}/holders" "/sys/block/${base}"/*/holders \
         -mindepth 1 -maxdepth 1 2>/dev/null | head -1 || true)"
     [[ -z "${holders}" ]] || die "${dev} is held by ${holders##*/} (dm/md/LVM) — deactivate first"
+}
+
+# Passwords are collected BEFORE anything destructive and applied at the very
+# end with chpasswd. Two reasons, both learned in the QEMU rehearsal: an
+# interactive passwd at the end of apply means one hangup on the controlling
+# terminal aborts an otherwise complete install; and collecting everything up
+# front makes the long middle fully unattended.
+root_pw='' user_pw=''
+collect_passwords() {
+    local a b
+    while :; do
+        read -rsp 'root password for the new system: ' a; printf '\n'
+        read -rsp 'retype: ' b; printf '\n'
+        [[ -n "${a}" && "${a}" == "${b}" ]] && { root_pw="${a}"; break; }
+        warn 'empty or mismatched, again'
+    done
+    if [[ -n "${new_user}" ]]; then
+        while :; do
+            read -rsp "password for ${new_user}: " a; printf '\n'
+            read -rsp 'retype: ' b; printf '\n'
+            [[ -n "${a}" && "${a}" == "${b}" ]] && { user_pw="${a}"; break; }
+            warn 'empty or mismatched, again'
+        done
+    fi
 }
 
 confirm_wipe() {
@@ -261,12 +292,10 @@ PRESET
     install -m 0755 -- /usr/local/bin/arcain-user-setup /mnt/usr/local/bin/arcain-user-setup
 
     msg 'accounts'
-    printf 'Set the root password.\n'
-    arch-chroot /mnt passwd
+    printf 'root:%s' "${root_pw}" | arch-chroot /mnt chpasswd
     if [[ -n "${new_user}" ]]; then
         arch-chroot /mnt useradd -m -G wheel -s /bin/bash -- "${new_user}"
-        printf 'Set the password for %s.\n' "${new_user}"
-        arch-chroot /mnt passwd -- "${new_user}"
+        printf '%s:%s' "${new_user}" "${user_pw}" | arch-chroot /mnt chpasswd
         printf '%%wheel ALL=(ALL:ALL) ALL\n' > /mnt/etc/sudoers.d/10-wheel
         chmod 0440 /mnt/etc/sudoers.d/10-wheel
     fi
@@ -314,6 +343,7 @@ case "${command}" in
         validate_target "${target}"
         show_plan "${target}"
         confirm_wipe "${target}"
+        collect_passwords
         do_apply "${target}" ;;
     version)
         printf 'arcain-install %s\n' "${version}" ;;
