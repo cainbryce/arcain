@@ -39,6 +39,18 @@ while getopts 'co:w:h' opt; do
     esac
 done
 
+# --- privilege --------------------------------------------------------------
+# Interactively that means sudo. In CI the build already runs as root inside a
+# container image that ships no sudo at all, so escalation has to be a no-op
+# there rather than a missing command.
+if (( EUID == 0 )); then
+    as_root=()
+else
+    command -v sudo &>/dev/null || die 'not running as root and sudo is not installed'
+    as_root=(sudo)
+fi
+readonly as_root
+
 # --- host dependencies ------------------------------------------------------
 missing=()
 for dep in "${host_deps[@]}"; do
@@ -50,7 +62,7 @@ install with: sudo pacman -S ${missing[*]}"
 # --- work dir ---------------------------------------------------------------
 if (( clean )); then
     msg "removing ${work_dir} and ${out_dir}"
-    sudo rm -rf -- "${work_dir}" "${out_dir}"
+    "${as_root[@]}" rm -rf -- "${work_dir}" "${out_dir}"
 fi
 mkdir -p -- "${work_dir}" "${out_dir}"
 
@@ -69,8 +81,8 @@ fi
 # --- build ------------------------------------------------------------------
 msg "building from ${profile_dir}"
 start=${SECONDS}
-sudo mkarchiso -v -w "${work_dir}" -o "${out_dir}" -- "${profile_dir}"
-sudo chown -R -- "$(id -u):$(id -g)" "${out_dir}"
+"${as_root[@]}" mkarchiso -v -w "${work_dir}" -o "${out_dir}" -- "${profile_dir}"
+"${as_root[@]}" chown -R -- "$(id -u):$(id -g)" "${out_dir}"
 
 iso="$(find "${out_dir}" -maxdepth 1 -name 'arcain-*.iso' -printf '%T@ %p\n' \
     | sort -rn | head -1 | cut -d' ' -f2-)"
@@ -83,16 +95,26 @@ iso="$(find "${out_dir}" -maxdepth 1 -name 'arcain-*.iso' -printf '%T@ %p\n' \
 # nothing about what actually landed on disk.
 msg "verifying ${iso##*/} (O_DIRECT read-back)"
 written="$(sha256sum -- "${iso}" | cut -d' ' -f1)"
-readback="$(dd if="${iso}" bs=1M iflag=direct status=none | sha256sum | cut -d' ' -f1)"
-[[ "${written}" == "${readback}" ]] \
-    || die "CHECKSUM MISMATCH — the ISO on disk differs from what was written.
+if readback="$(dd if="${iso}" bs=1M iflag=direct status=none | sha256sum | cut -d' ' -f1)"; then
+    [[ "${written}" == "${readback}" ]] \
+        || die "CHECKSUM MISMATCH — the ISO on disk differs from what was written.
   page cache: ${written}
   disk:       ${readback}
 Do not write this image to a USB stick. Rebuild and check dmesg."
+    verdict='sha256 verified against an uncached read'
+else
+    # Not every filesystem implements O_DIRECT — overlayfs in a CI container,
+    # tmpfs, some network mounts. Failing to read is not the same as reading
+    # something different, so this warns rather than aborting; the integrity
+    # claim is simply void for that build.
+    printf '\033[1;33m::\033[0m %s\n' \
+        'O_DIRECT read-back is unsupported here — ISO integrity NOT verified' >&2
+    verdict='sha256 computed from cache only — NOT verified against disk'
+fi
 
 printf '%s  %s\n' "${written}" "${iso##*/}" > "${iso}.sha256"
 
 msg "done in $(( (SECONDS - start) / 60 ))m$(( (SECONDS - start) % 60 ))s"
 printf '   %s  (%s)\n' "${iso}" "$(du -h -- "${iso}" | cut -f1)"
-printf '   sha256 verified against an uncached read\n'
+printf '   %s\n' "${verdict}"
 printf '\n   test:  ./test.sh\n   write: sudo dd if=%s of=/dev/sdX bs=4M status=progress oflag=direct conv=fsync\n' "${iso}"

@@ -77,6 +77,11 @@ profile/
         └── systemd/...                        autologin, networkd, resolved
 build.sh                   mkarchiso wrapper + integrity verification
 test.sh                    QEMU/OVMF harness
+verify-iso.sh              static checks on a finished image
+capture-system.sh          snapshot this machine's /etc into system/
+system/                    captured config, package lists, enabled units
+docs/LAYOUT.md             target layout for the installed system
+.github/workflows/build.yml   CI: build + verify, release on tag
 ```
 
 `airootfs/` ownership and permissions are **not** preserved — everything is
@@ -153,10 +158,40 @@ against the page-cache value. `O_DIRECT` is the point: a normal re-read is
 answered from RAM and proves nothing about what reached the disk. On a
 mismatch it refuses to hand you the image.
 
+## Continuous integration
+
+`.github/workflows/build.yml`, two jobs.
+
+**`build`** runs on every push to `main`, every pull request, and every tag. It
+runs in an `archlinux:latest` container with `--privileged`, because `pacstrap`
+bind-mounts `/proc`, `/sys` and `/dev` into the chroot and the default container
+capability set has no `CAP_SYS_ADMIN`. `SOURCE_DATE_EPOCH` is pinned to the
+commit date, so a given commit always yields the same `iso_version` and
+`iso_label` rather than whatever day the build ran. Then `./build.sh`,
+`./verify-iso.sh`, and the ISO plus its checksum go up as an artifact.
+
+**`release`** needs `build`, and is skipped unless the ref is a tag. It pulls
+the artifact and publishes it with `gh release create`, using
+`secrets.GITHUB_TOKEN` and `contents: write`. Tag it to ship:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+There is no boot test in CI. GitHub's runners expose no KVM, and `test.sh` asks
+for `accel=kvm`; a TCG boot would work but costs 10–20 minutes a run. What
+`verify-iso.sh` checks instead, all against the finished image rather than the
+work directory: the checksum sidecar, that `xorriso` can read it, the
+`ARCAIN_*` volume label, exactly one El Torito UEFI image and no BIOS image, an
+EFI system partition in the GPT, `/EFI/BOOT/BOOTX64.EFI` and `shellx64.efi`
+inside the ESP, `archisobasedir=` and `archisosearchuuid=` baked into the UKI's
+`.cmdline` section, and a package list that has `linux-zen` and none of `linux`,
+`grub`, `syslinux`, `refind`, `memtest86+` or `archinstall`.
+
 ## Status
 
 - [x] Phase 1 — profile: EFI stub boot mode, zen kernel, pruned package set
-- [x] Phase 2 — `build.sh` + `test.sh`
+- [x] Phase 2 — `build.sh` + `test.sh` + `verify-iso.sh`, CI build and release
 - [ ] Phase 3 — `arcain-install` (skeleton in
       `profile/airootfs/usr/local/bin/arcain-install`)
 - [ ] Phase 4 — portable workstation layer (persistence, dotfiles)

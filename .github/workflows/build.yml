@@ -1,0 +1,111 @@
+name: build
+
+# Job 1 runs on every push and pull request: it builds the ISO and runs the
+# static checks in verify-iso.sh. Job 2 only runs for a pushed tag, and only if
+# job 1 passed, and publishes the image it produced as a GitHub release.
+on:
+  push:
+    branches: [main]
+    tags:
+      - 'v*'
+      - '[0-9][0-9][0-9][0-9].*'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build and verify ISO
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      # pacstrap bind-mounts /proc, /sys and /dev into the chroot, which needs
+      # CAP_SYS_ADMIN. The default container capability set does not include it,
+      # so the build fails at _make_packages without this.
+      options: --privileged
+    steps:
+      # Runs before checkout on purpose: the archlinux base image has no git,
+      # and actions/checkout silently falls back to a tarball download without
+      # it, which loses the commit metadata the next step reads.
+      - name: install host dependencies
+        run: |
+          pacman -Syu --noconfirm --needed \
+            archiso systemd-ukify dosfstools mtools libisoburn squashfs-tools \
+            git util-linux
+
+      - uses: actions/checkout@v5
+
+      - name: trust the workspace
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+      # mkarchiso honours SOURCE_DATE_EPOCH, and profiledef.sh derives both
+      # iso_version and iso_label from it. Pinning it to the commit date makes
+      # a given commit always produce the same version string, instead of
+      # whatever day CI happened to run.
+      - name: pin the build date to the commit
+        run: echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)" >> "${GITHUB_ENV}"
+
+      - name: build
+        run: ./build.sh
+
+      - name: verify
+        run: ./verify-iso.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arcain-iso
+          path: |
+            out/*.iso
+            out/*.iso.sha256
+          # The payload is already a zstd-compressed squashfs. Zipping it again
+          # buys nothing and costs several minutes each way.
+          compression-level: 0
+          retention-days: 14
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: arcain-iso
+          path: out
+
+      - name: create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          iso="$(find out -maxdepth 1 -name 'arcain-*.iso' | head -1)"
+          [[ -n "${iso}" ]] || { echo '::error::no ISO in the build artifact'; exit 1; }
+          name="$(basename -- "${iso}")"
+          sum="$(cut -d' ' -f1 < "${iso}.sha256")"
+
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "arcain ${GITHUB_REF_NAME}" \
+            --notes "Built by CI from \`${GITHUB_SHA}\`.
+
+          \`\`\`
+          ${sum}  ${name}
+          \`\`\`
+
+          Write it:
+
+          \`\`\`sh
+          sudo dd if=${name} of=/dev/sdX bs=4M status=progress oflag=direct conv=fsync
+          \`\`\`
+
+          UEFI firmware required. There is no BIOS boot mode and the unified
+          kernel image is unsigned, so Secure Boot must be off." \
+            "${iso}" "${iso}.sha256"
