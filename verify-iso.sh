@@ -23,7 +23,7 @@ readonly install_dir='arcain'
 # supposed to be EFI stub only, or that a deliberately dropped subsystem came
 # back with a dependency.
 readonly forbidden_packages=(
-    grub syslinux refind memtest86+ memtest86+-efi archinstall linux
+    grub syslinux refind memtest86+ archinstall linux
 )
 
 readonly deps=(
@@ -138,6 +138,11 @@ if [[ -n "${esp}" ]] && mdir -/ -b -i "${esp}" '::/' >"${tmp}/esp.txt" 2>&1; the
         ok 'ESP contains shellx64.efi (the only route to a modified cmdline)'
     else
         bad 'ESP has no shellx64.efi — edk2-shell missing from the image'
+    fi
+    if grep -qi '/memtest.efi' "${tmp}/esp.txt"; then
+        ok 'ESP contains memtest.efi (RAM tester, launched from the shell)'
+    else
+        bad 'ESP has no memtest.efi — memtest86+-efi missing from the image'
     fi
 else
     bad 'could not extract or read the El Torito EFI image'

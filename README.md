@@ -52,12 +52,17 @@ releng's exact known-good command line instead of guessing at `archisolabel=`.
 
 ### What it costs
 
-- **One boot entry, no menu.** No memtest, no accessibility entry, no
-  `nomodeset` fallback, no "boot from disk". On a machine that will not come
-  up, there is nothing to edit.
+- **One boot entry, no menu.** No accessibility entry, no `nomodeset`
+  fallback, no "boot from disk". On a machine that will not come up, there is
+  nothing to edit.
 - **Mitigation:** `edk2-shell` is on the image. Outside Secure Boot,
   `systemd-stub` reads EFI LoadOptions and appends them to the baked-in command
   line, so launching `BOOTX64.EFI` from the shell with arguments works.
+- **Memtest is back, via that shell.** `memtest86+-efi` sits at the root of the
+  ESP: pick the arcain entry's disk in the firmware menu is not needed — from
+  the UEFI shell run `fs0:` then `memtest.efi`. On this hardware (non-ECC RAM,
+  historical corruption under load) a rescue stick without a RAM tester would
+  be missing its most likely job.
 - **No BIOS boot at all.** Anything older than roughly 2012 will not boot this.
 - **No file system transposition.** The UKI is staged into the FAT image only,
   not into the ISO 9660 tree, which took the image from 1673 to 1441 MiB — the
@@ -98,7 +103,7 @@ different bits goes in `file_permissions` in `profiledef.sh`.
 ## Deltas from releng
 
 **Boot:** `syslinux/`, `grub/`, `efiboot/` deleted along with their packages
-(`syslinux`, `grub`, `refind`, `memtest86+`, `memtest86+-efi`) and the units
+(`syslinux`, `grub`, `refind`, `memtest86+`) and the units
 they needed (`choose-mirror`, which reads a `mirror=` boot parameter that can no
 longer be passed).
 
@@ -193,7 +198,8 @@ work directory: the checksum sidecar, that `xorriso` can read it, the
 EFI system partition in the GPT, `/EFI/BOOT/BOOTX64.EFI` and `shellx64.efi`
 inside the ESP, `archisobasedir=` and `archisosearchuuid=` baked into the UKI's
 `.cmdline` section, and a package list that has `linux-zen` and none of `linux`,
-`grub`, `syslinux`, `refind`, `memtest86+` or `archinstall`.
+`grub`, `syslinux`, `refind`, `memtest86+` (the BIOS build; the EFI build is
+required on the ESP) or `archinstall`.
 
 ## Status
 

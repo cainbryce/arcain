@@ -15,7 +15,11 @@ mkinitcpio-archiso
 
 # Boot. No syslinux/grub/refind: this profile is EFI stub only.
 # edk2-shell is the only way to reach a modified kernel command line.
+# memtest86+-efi is launched from that shell too: this machine corrupts memory
+# under load (non-ECC RAM and/or MCE overclock, see the 2026-07-09 incident),
+# so the rescue medium must be able to test RAM. 155 KiB.
 edk2-shell
+memtest86+-efi
 efibootmgr
 dosfstools
 mtools

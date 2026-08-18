@@ -121,6 +121,15 @@ _make_bootmode_uefi.efistub() {
             "${_ukidir}/shell${uefi_arch[$arch],,}.efi"
     fi
 
+    # Memory tester, launchable from that shell: fs0:, then memtest.efi.
+    # With no boot menu the shell is the only launcher this image has, and a
+    # machine suspected of corrupting RAM is exactly what a rescue stick gets
+    # plugged into.
+    if [[ -e "${pacstrap_dir}/boot/memtest86+/memtest.efi" ]]; then
+        install -m 0644 -- "${pacstrap_dir}/boot/memtest86+/memtest.efi" \
+            "${_ukidir}/memtest.efi"
+    fi
+
     # Size and create the FAT image that becomes the EFI system partition, then
     # populate it from the same files. The kernel and initramfs are inside the
     # UKI, so unlike systemd-boot there is nothing else to copy: no
