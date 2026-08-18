@@ -1,0 +1,5 @@
+/work/
+/out/
+/scratch.qcow2
+*.iso
+*.iso.sha256

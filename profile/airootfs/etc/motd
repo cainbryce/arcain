@@ -1,0 +1,10 @@
+This is [38;2;23;147;209marcain[0m — Arch Linux, linux-zen, EFI stub boot.
+
+Wi-Fi: authenticate with [35miwctl[0m. Ethernet and WLAN over DHCP come up on their own.
+
+Rescue: ddrescue, testdisk, partclone, fsarchiver, smartmontools, nvme-cli,
+cryptsetup, btrfs-progs, bcachefs-tools, lvm2, mdadm.
+
+Install: [35marcain-install[0m (not implemented yet — install by hand with
+arch-chroot and genfstab from arch-install-scripts).
+

@@ -1,0 +1,125 @@
+# arcain package list.
+# Forked from archiso's releng profile. Deltas are marked below.
+# One package per line. Blank lines and '#' comments are ignored.
+
+base
+linux-zen
+linux-firmware
+linux-firmware-marvell
+amd-ucode
+intel-ucode
+
+# archiso itself. Both are mandatory, the ISO does not boot without them.
+mkinitcpio
+mkinitcpio-archiso
+
+# Boot. No syslinux/grub/refind: this profile is EFI stub only.
+# edk2-shell is the only way to reach a modified kernel command line.
+edk2-shell
+efibootmgr
+dosfstools
+mtools
+
+# Install tooling. archinstall dropped, arcain installs with its own script.
+arch-install-scripts
+reflector
+squashfs-tools
+sudo
+systemd-resolvconf
+
+# Filesystems
+bcachefs-tools
+btrfs-progs
+cryptsetup
+e2fsprogs
+exfatprogs
+f2fs-tools
+fatresize
+gptfdisk
+lvm2
+mdadm
+dmraid
+ntfsprogs
+parted
+udftools
+xfsprogs
+
+# Disk rescue and forensics
+ddrescue
+fsarchiver
+partclone
+testdisk
+hdparm
+sdparm
+sg3_utils
+smartmontools
+nvme-cli
+lsscsi
+mmc-utils
+pv
+
+# Hardware
+bolt
+dmidecode
+libusb-compat
+pciutils
+usbmuxd
+usbutils
+sof-firmware
+alsa-utils
+tpm2-tools
+tpm2-tss
+libfido2
+
+# Network
+bind
+dhcpcd
+ethtool
+iw
+iwd
+ldns
+lftp
+lynx
+ndisc6
+nmap
+openssh
+openvpn
+rsync
+tcpdump
+wireless-regdb
+wireless_tools
+wpa_supplicant
+
+# Console environment
+diffutils
+fd
+git
+gpm
+grml-zsh-config
+htop
+jq
+less
+man-db
+man-pages
+mc
+nano
+p7zip
+ripgrep
+screen
+sequoia-sq
+terminus-font
+tmux
+tree
+unzip
+vim
+wget
+xdg-utils
+zsh
+
+# terminfo for the terminals cain actually uses
+foot-terminfo
+ghostty-terminfo
+kitty-terminfo
+
+# Guest agent, so `arcain test` gets a clean shutdown from the host
+qemu-guest-agent

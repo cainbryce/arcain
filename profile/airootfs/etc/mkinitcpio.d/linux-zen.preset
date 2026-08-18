@@ -1,0 +1,11 @@
+# mkinitcpio preset file for the 'linux-zen' package on arcain
+#
+# The file name must match the package base, or the mkinitcpio pacman hook
+# will not fire for this kernel and no initramfs is built.
+
+PRESETS=('archiso')
+
+ALL_kver='/boot/vmlinuz-linux-zen'
+archiso_config='/etc/mkinitcpio.conf.d/archiso.conf'
+
+archiso_image="/boot/initramfs-linux-zen.img"
