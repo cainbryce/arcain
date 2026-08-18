@@ -89,6 +89,7 @@ build.sh                   mkarchiso wrapper + integrity verification
 test.sh                    QEMU/OVMF harness
 verify-iso.sh              static checks on a finished image
 capture-system.sh          snapshot this machine's /etc into system/
+tools/filter-manifests.sh  captured lists -> pure-Arch install manifests
 system/                    captured config, package lists, enabled units (encrypted)
 docs/SECRETS.md            why system/ is encrypted, and how to unlock it
 LICENSE                    GPL-3.0
@@ -205,8 +206,11 @@ required on the ESP) or `archinstall`.
 
 - [x] Phase 1 — profile: EFI stub boot mode, zen kernel, pruned package set
 - [x] Phase 2 — `build.sh` + `test.sh` + `verify-iso.sh`, CI build and release
-- [ ] Phase 3 — `arcain-install` (skeleton in
-      `profile/airootfs/usr/local/bin/arcain-install`)
+- [x] Phase 3 — `arcain-install`: wipe-one-disk install with the LAYOUT.md
+      subvolume scheme and EFI stub UKI boot; rehearse with `./test.sh -d`.
+      The donor machine's multi-disk adoption stays manual (docs/LAYOUT.md) —
+      not automating edits to filesystems holding data that exists nowhere
+      else, on hardware still corrupting memory
 - [ ] Phase 4 — portable workstation layer (persistence, dotfiles)
 - [x] btrfs subvolume layout and mount options (`docs/LAYOUT.md`)
 - [x] snapshots — [`arcain-snap`](https://github.com/cainbryce/arcain-snap), its own repo

@@ -1,52 +1,316 @@
 #!/usr/bin/env bash
 # arcain-install — the installer that replaces archinstall on this medium.
 #
-# Phase 3 of the project. Right now this is a skeleton: it establishes the
-# structure and the safety rails, and stops before touching a disk.
+#   arcain-install plan  -d /dev/sdX [options]   show what apply would do
+#   arcain-install apply -d /dev/sdX [options]   partition, install, make bootable
+#   arcain-install disks                         list candidate target disks
+#
+#   -d DEV   target disk (whole device, e.g. /dev/sda — never a partition)
+#   -s DIR   unlocked arcain checkout; replays system/etc and derived manifests
+#   -H NAME  hostname                 (default: arcain)
+#   -u NAME  user to create           (default: none, root only)
+#   -T ZONE  timezone                 (default: UTC)
+#
+# Wipes ONE disk and builds the docs/LAYOUT.md system on it: GPT with a 4 GiB
+# ESP and a btrfs pool, the flat @-subvolume layout, and an EFI stub UKI with
+# no boot loader — the installed system boots exactly like this ISO does.
+#
+# The donor machine's multi-disk adoption plan (existing partitions kept,
+# subvolumes added next to live data) is deliberately NOT automated: it edits
+# filesystems holding 1.5 TiB of data that exists nowhere else, on a machine
+# still corrupting memory. docs/LAYOUT.md is the procedure; this installer
+# covers the wipe-one-disk case and the QEMU rehearsal (./test.sh -d).
 
 set -euo pipefail
 
-readonly version='0.0.1'
+readonly version='0.1.0'
+readonly esp_size='4GiB'
+readonly btrfs_label='system'
+readonly esp_label='ARCAIN_EFI'
+
+# Everything on the pool follows docs/LAYOUT.md: flat, @-prefixed, and only
+# subvolumes that survive a rollback boundary, want different mount options,
+# or get backed up on their own schedule. /var/lib/pacman stays inside @ on
+# purpose — a rollback that restores /usr but not the package database leaves
+# a system whose database lies about what is installed.
+readonly -A subvols=(
+    [@]='/'
+    [@home]='/home'
+    [@root]='/root'
+    [@srv]='/srv'
+    [@log]='/var/log'
+    [@cache]='/var/cache'
+    [@tmp]='/var/tmp'
+    [@containers]='/var/lib/containers'
+    [@snapshots]='/.snapshots'
+)
+readonly mnt_opts='noatime,compress=zstd:1,ssd,discard=async,space_cache=v2'
+
+# Enough for a bootable console system with the same boot design as the ISO.
+# -s DIR layers the full derived package set on top.
+readonly base_packages=(
+    base linux-zen linux-firmware amd-ucode intel-ucode
+    btrfs-progs dosfstools efibootmgr
+    networkmanager openssh sudo git vim man-db
+)
+
+target='' sysdir='' new_hostname='arcain' new_user='' timezone='UTC'
 
 msg()  { printf '\033[1;34m::\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m::\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m::\033[0m %s\n' "$*" >&2; exit 1; }
 
-(( EUID == 0 )) || die 'must run as root'
-[[ -d /sys/firmware/efi ]] || die 'not booted in UEFI mode'
+# ---------------------------------------------------------------------------
+# Disk selection policy (was the open TODO). Decisions:
+#   - never auto-pick, even with one candidate: convenient exactly once,
+#     catastrophic if that one disk holds a system;
+#   - the boot medium is excluded, found via /run/archiso/bootmnt;
+#   - a disk with existing signatures demands the device path typed back,
+#     then the word WIPE — y/n reflexes do not survive muscle memory;
+#   - a disk with mounted partitions or active dm/md holders is refused
+#     outright rather than confirmed around.
+# ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# TODO(cain): disk selection policy.
-#
-# This is the first decision the installer makes and the only one that can
-# destroy data, so it is worth deciding deliberately rather than inheriting
-# whatever archinstall does.
-#
-# Fill in select_target_disk(). It should print the chosen block device path
-# (e.g. /dev/nvme0n1) on stdout and nothing else — callers capture it.
-#
-# Things to weigh:
-#   - Auto-pick when exactly one candidate disk exists, or always prompt?
-#     Auto-picking is convenient on a fresh machine and catastrophic on a
-#     machine that already has a system on that one disk.
-#   - Which devices even count as candidates? `lsblk -dno NAME,TYPE` lists
-#     loop devices, zram, and the arcain USB stick itself. Excluding the boot
-#     medium matters: `lsblk -no PKNAME "$(findmnt -no SOURCE /run/archiso/bootmnt)"`
-#     names it.
-#   - Does a disk with existing partitions need a second confirmation, typed
-#     rather than y/n?
-#   - Refuse outright, or allow, when the disk is mounted or holds an active
-#     LVM/RAID member?
-# ---------------------------------------------------------------------------
-# shellcheck disable=SC2329  # not wired into main() until it is implemented
-select_target_disk() {
-    die 'select_target_disk() is not implemented yet'
+boot_medium() {
+    local src
+    src="$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null)" || return 0
+    lsblk -no PKNAME "${src}" 2>/dev/null | head -1
 }
 
-main() {
-    msg "arcain-install ${version}"
-    warn 'installer not implemented — this medium is live/rescue only for now'
-    exit 1
+candidate_disks() {
+    # lsblk types zram as 'disk'; loop and rom it types honestly.
+    local boot; boot="$(boot_medium)"
+    lsblk -dno NAME,TYPE | awk -v boot="${boot}" \
+        '$2 == "disk" && $1 != boot && $1 !~ /^zram/ {print "/dev/" $1}'
 }
 
-main "$@"
+list_disks() {
+    local d boot; boot="$(boot_medium)"
+    printf '%-14s %8s  %-6s %s\n' DEVICE SIZE TRAN MODEL
+    while read -r d; do
+        local inuse=''
+        lsblk -no MOUNTPOINTS "${d}" | grep -q . && inuse='   [in use — will be refused]'
+        lsblk -dno NAME,SIZE,TRAN,MODEL "${d}" \
+            | awk -v tag="${inuse}" '{printf "/dev/%-9s %8s  %-6s", $1, $2, $3; $1=$2=$3=""; print $0 tag}'
+    done < <(candidate_disks)
+    if [[ -n "${boot}" ]]; then
+        printf '(excluded: /dev/%s — the medium this is running from)\n' "${boot}"
+    fi
+}
+
+validate_target() {
+    local dev="$1" base holders parts
+    [[ -b "${dev}" ]] || die "${dev} is not a block device"
+    [[ "$(lsblk -dno TYPE "${dev}")" == 'disk' ]] \
+        || die "${dev} is not a whole disk — pass the device, not a partition"
+    base="${dev##*/}"
+    [[ "${base}" == "$(boot_medium)" ]] && die "${dev} is the boot medium"
+
+    # Mounted anywhere, or claimed by dm/md/LVM: refuse, do not confirm around.
+    parts="$(lsblk -no NAME,MOUNTPOINTS "${dev}" | awk 'NF > 1 {print $1}')"
+    [[ -z "${parts}" ]] || die "${dev} has mounted partitions: $(echo "${parts}" | tr '\n' ' ')"
+    holders="$(find "/sys/block/${base}/holders" "/sys/block/${base}"/*/holders \
+        -mindepth 1 -maxdepth 1 2>/dev/null | head -1)"
+    [[ -z "${holders}" ]] || die "${dev} is held by ${holders##*/} (dm/md/LVM) — deactivate first"
+}
+
+confirm_wipe() {
+    local dev="$1" sigs reply
+    sigs="$(wipefs -n "${dev}" 2>/dev/null | tail -n +2)"
+    lsblk -no NAME,SIZE,FSTYPE,LABEL "${dev}"
+    if [[ -n "${sigs}" || -n "$(lsblk -no FSTYPE "${dev}" | grep -v '^$')" ]]; then
+        warn "${dev} holds existing data. Everything on it will be destroyed."
+        printf 'Type the device path (%s) to continue: ' "${dev}"
+        read -r reply
+        [[ "${reply}" == "${dev}" ]] || die 'aborted'
+        printf 'Type WIPE in capitals: '
+        read -r reply
+        [[ "${reply}" == 'WIPE' ]] || die 'aborted'
+    else
+        printf 'Install to blank disk %s? [y/N] ' "${dev}"
+        read -r reply
+        [[ "${reply}" == 'y' || "${reply}" == 'Y' ]] || die 'aborted'
+    fi
+}
+
+# ---------------------------------------------------------------------------
+part_paths() {
+    # nvme0n1 -> nvme0n1p1; sda -> sda1
+    local dev="$1"
+    if [[ "${dev}" =~ [0-9]$ ]]; then
+        esp_dev="${dev}p1"; pool_dev="${dev}p2"
+    else
+        esp_dev="${dev}1"; pool_dev="${dev}2"
+    fi
+}
+
+show_plan() {
+    local dev="$1" sub
+    part_paths "${dev}"
+    msg "plan for ${dev}"
+    printf '   %-16s GPT label, wiping all signatures\n' "${dev}"
+    printf '   %-16s %s FAT32 ESP, label %s, mounted at /efi\n' "${esp_dev}" "${esp_size}" "${esp_label}"
+    printf '   %-16s btrfs to end of disk, label %s\n' "${pool_dev}" "${btrfs_label}"
+    for sub in "${!subvols[@]}"; do
+        printf '     %-14s -> %s\n' "${sub}" "${subvols[${sub}]}"
+    done | sort -t'>' -k2
+    printf '   mount options   %s\n' "${mnt_opts}"
+    printf '   packages        %s' "${base_packages[*]}"
+    if [[ -n "${sysdir}" ]]; then
+        printf ' + %s from %s/system/derived\n' \
+            "$(wc -l < "${sysdir}/system/derived/packages-repo.txt" 2>/dev/null || echo '?')" "${sysdir}"
+        printf '   config replay   %s/system/etc -> /etc, units enabled from derived list\n' "${sysdir}"
+    else
+        printf '\n   config replay   none (-s not given)\n'
+    fi
+    printf '   boot            EFI stub UKI: /efi/EFI/Linux/arch-linux-zen.efi + fallback, no boot loader\n'
+    printf '   hostname %s   user %s   timezone %s\n' \
+        "${new_hostname}" "${new_user:-'(none)'}" "${timezone}"
+}
+
+do_apply() {
+    local dev="$1" sub uuid
+    part_paths "${dev}"
+
+    msg 'partitioning'
+    wipefs -a -- "${dev}" >/dev/null
+    sgdisk --zap-all -- "${dev}" >/dev/null
+    sgdisk -n "1:0:+${esp_size}" -t 1:ef00 -c "1:${esp_label}" -- "${dev}" >/dev/null
+    sgdisk -n '2:0:0' -t 2:8300 -c "2:${btrfs_label}" -- "${dev}" >/dev/null
+    partprobe -- "${dev}"; udevadm settle
+
+    msg 'filesystems'
+    mkfs.fat -F 32 -n "${esp_label}" -- "${esp_dev}" >/dev/null
+    mkfs.btrfs -f -L "${btrfs_label}" -- "${pool_dev}" >/dev/null
+
+    msg 'subvolumes'
+    mount -- "${pool_dev}" /mnt
+    for sub in "${!subvols[@]}"; do
+        btrfs subvolume create "/mnt/${sub}" >/dev/null
+    done
+    umount /mnt
+
+    msg 'mounting'
+    mount -o "${mnt_opts},subvol=@" -- "${pool_dev}" /mnt
+    for sub in "${!subvols[@]}"; do
+        [[ "${sub}" == '@' ]] && continue
+        mount --mkdir -o "${mnt_opts},subvol=${sub}" -- "${pool_dev}" "/mnt${subvols[${sub}]}"
+    done
+    mount --mkdir -- "${esp_dev}" /mnt/efi
+    install -d -m 0755 /mnt/boot   # plain directory on @, rides along with rollbacks
+
+    msg "pacstrap (${#base_packages[@]} base packages$( [[ -n "${sysdir}" ]] && echo ' + derived set'))"
+    local -a pkgs=("${base_packages[@]}")
+    if [[ -n "${sysdir}" && -r "${sysdir}/system/derived/packages-repo.txt" ]]; then
+        mapfile -t -O "${#pkgs[@]}" pkgs < "${sysdir}/system/derived/packages-repo.txt"
+    fi
+    pacstrap -K /mnt "${pkgs[@]}"
+
+    msg 'fstab'
+    genfstab -U /mnt >> /mnt/etc/fstab
+
+    msg 'identity + clock + locale'
+    printf '%s\n' "${new_hostname}" > /mnt/etc/hostname
+    ln -sf "/usr/share/zoneinfo/${timezone}" /mnt/etc/localtime
+    arch-chroot /mnt hwclock --systohc
+    if [[ -n "${sysdir}" && -d "${sysdir}/system/etc" ]]; then
+        msg "replaying ${sysdir}/system/etc"
+        cp -a -- "${sysdir}/system/etc/." /mnt/etc/
+        # captured pacman.conf carries CachyOS repos; the fresh stock file wins
+        cp -- /mnt/etc/pacman.conf.pacnew /mnt/etc/pacman.conf 2>/dev/null || true
+    fi
+    [[ -f /mnt/etc/locale.gen ]] && sed -i 's/^#en_US.UTF-8/en_US.UTF-8/' /mnt/etc/locale.gen
+    arch-chroot /mnt locale-gen >/dev/null
+    [[ -f /mnt/etc/locale.conf ]] || printf 'LANG=en_US.UTF-8\n' > /mnt/etc/locale.conf
+
+    msg 'EFI stub UKI (no boot loader)'
+    uuid="$(blkid -s UUID -o value -- "${pool_dev}")"
+    printf 'root=UUID=%s rootflags=subvol=@ rw\n' "${uuid}" > /mnt/etc/kernel/cmdline
+    install -d -m 0755 /mnt/efi/EFI/Linux
+    cat > /mnt/etc/mkinitcpio.d/linux-zen.preset <<'PRESET'
+# arcain: unified kernel images straight to the ESP, no boot loader.
+ALL_kver="/boot/vmlinuz-linux-zen"
+
+PRESETS=('default' 'fallback')
+
+default_uki="/efi/EFI/Linux/arch-linux-zen.efi"
+
+fallback_uki="/efi/EFI/Linux/arch-linux-zen-fallback.efi"
+fallback_options="-S autodetect"
+PRESET
+    arch-chroot /mnt mkinitcpio -P
+    arch-chroot /mnt efibootmgr --create --disk "${dev}" --part 1 \
+        --label 'arcain fallback' --loader '\EFI\Linux\arch-linux-zen-fallback.efi' >/dev/null
+    arch-chroot /mnt efibootmgr --create --disk "${dev}" --part 1 \
+        --label 'arcain' --loader '\EFI\Linux\arch-linux-zen.efi' >/dev/null
+
+    msg 'services'
+    arch-chroot /mnt systemctl enable NetworkManager >/dev/null 2>&1
+    if [[ -n "${sysdir}" && -r "${sysdir}/system/derived/units-system.txt" ]]; then
+        # Best effort: units whose packages did not install simply fail to enable.
+        while read -r unit; do
+            arch-chroot /mnt systemctl enable "${unit}" >/dev/null 2>&1 \
+                || warn "could not enable ${unit}"
+        done < "${sysdir}/system/derived/units-system.txt"
+    fi
+
+    msg 'accounts'
+    printf 'Set the root password.\n'
+    arch-chroot /mnt passwd
+    if [[ -n "${new_user}" ]]; then
+        arch-chroot /mnt useradd -m -G wheel -s /bin/bash -- "${new_user}"
+        printf 'Set the password for %s.\n' "${new_user}"
+        arch-chroot /mnt passwd -- "${new_user}"
+        printf '%%wheel ALL=(ALL:ALL) ALL\n' > /mnt/etc/sudoers.d/10-wheel
+        chmod 0440 /mnt/etc/sudoers.d/10-wheel
+    fi
+
+    msg "done. reboot and pick 'arcain' in the firmware boot menu."
+    printf '   next steps on the installed system:\n'
+    printf '   - arcain-snap: https://github.com/cainbryce/arcain-snap (make install install-config)\n'
+    printf '   - AUR packages: system/derived/packages-aur.txt via an AUR helper\n'
+}
+
+# ---------------------------------------------------------------------------
+command="${1:-}"; shift || true
+
+while getopts 'd:s:H:u:T:h' opt; do
+    case "${opt}" in
+        d) target="${OPTARG}" ;;
+        s) sysdir="$(realpath -- "${OPTARG}")" ;;
+        H) new_hostname="${OPTARG}" ;;
+        u) new_user="${OPTARG}" ;;
+        T) timezone="${OPTARG}" ;;
+        h) sed -n '2,24p' "${BASH_SOURCE[0]}"; exit 0 ;;
+        *) exit 1 ;;
+    esac
+done
+
+case "${command}" in
+    disks)
+        list_disks ;;
+    plan)
+        [[ -n "${target}" ]] || die 'plan needs -d DISK (see: arcain-install disks)'
+        validate_target "${target}"
+        show_plan "${target}" ;;
+    apply)
+        (( EUID == 0 )) || die 'must run as root'
+        [[ -d /sys/firmware/efi ]] || die 'not booted in UEFI mode'
+        [[ -n "${target}" ]] || die 'apply needs -d DISK (see: arcain-install disks)'
+        if [[ -n "${sysdir}" ]]; then
+            [[ -d "${sysdir}/system/etc" ]] || die "-s ${sysdir}: no system/etc there"
+            head -c 9 "${sysdir}/system/generated/identity.txt" 2>/dev/null | grep -q GITCRYPT \
+                && die "-s ${sysdir}: system/ is git-crypt locked — unlock it first"
+        fi
+        [[ -e /run/archiso/bootmnt ]] || warn 'not running from the arcain ISO — proceeding anyway'
+        validate_target "${target}"
+        show_plan "${target}"
+        confirm_wipe "${target}"
+        do_apply "${target}" ;;
+    version)
+        printf 'arcain-install %s\n' "${version}" ;;
+    ''|help|-h|--help)
+        sed -n '2,24p' "${BASH_SOURCE[0]}" ;;
+    *)
+        die "unknown command: ${command}" ;;
+esac
