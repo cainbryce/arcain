@@ -134,10 +134,11 @@ _make_bootmode_uefi.efistub() {
     # populate it from the same files. The kernel and initramfs are inside the
     # UKI, so unlike systemd-boot there is nothing else to copy: no
     # _make_boot_on_fat.
-    efiboot_files=("${_ukidir}/EFI")
-    if compgen -G "${_ukidir}/shell"*'.efi' >/dev/null; then
-        efiboot_files+=("${_ukidir}/shell"*'.efi')
-    fi
+    # Everything at the top level of the staging dir goes to the root of the
+    # ESP: the EFI/ tree, shellx64.efi, memtest.efi. Enumerated rather than
+    # globbed-per-name so the next loose file added above cannot repeat the
+    # mistake where memtest.efi was staged but never copied in.
+    efiboot_files=("${_ukidir}"/*)
     _make_efibootimg
     mcopy -s -i "${efibootimg}" "${efiboot_files[@]}" '::/'
 
