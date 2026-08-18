@@ -1,0 +1,10 @@
+# Everything captured off the running machine is encrypted at rest with
+# git-crypt. The working tree stays plaintext, so capture-system.sh and the
+# installer are unaffected; only what git stores is ciphertext.
+#
+# This covers the whole system/ tree, not just system/generated/. The /etc
+# files identify the machine just as clearly: smb.conf alone carries the
+# hostname, the username, the wireless interface and the LAN allow-list.
+#
+# See docs/SECRETS.md before cloning or pushing this.
+system/** filter=git-crypt diff=git-crypt

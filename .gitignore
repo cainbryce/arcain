@@ -1,5 +1,25 @@
+# Build output
 /work/
 /out/
-/scratch.qcow2
 *.iso
 *.iso.sha256
+
+# QEMU scratch disk from test.sh
+/scratch.qcow2
+
+# verify-iso.sh extraction scratch
+/boot-images/
+
+# Editors
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Session/tooling state
+.remember/

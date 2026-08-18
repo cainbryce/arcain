@@ -79,8 +79,9 @@ build.sh                   mkarchiso wrapper + integrity verification
 test.sh                    QEMU/OVMF harness
 verify-iso.sh              static checks on a finished image
 capture-system.sh          snapshot this machine's /etc into system/
-system/                    captured config, package lists, enabled units
-installer/                 hand-written files for the INSTALLED system
+system/                    captured config, package lists, enabled units (encrypted)
+docs/SECRETS.md            why system/ is encrypted, and how to unlock it
+LICENSE                    GPL-3.0
 docs/LAYOUT.md             target layout for the installed system
 .github/workflows/build.yml   CI: build + verify, release on tag
 ```
@@ -196,8 +197,15 @@ inside the ESP, `archisobasedir=` and `archisosearchuuid=` baked into the UKI's
 - [ ] Phase 3 — `arcain-install` (skeleton in
       `profile/airootfs/usr/local/bin/arcain-install`)
 - [ ] Phase 4 — portable workstation layer (persistence, dotfiles)
-- [x] btrfs subvolume layout, mount options and `arcain-snap` (`installer/`)
+- [x] btrfs subvolume layout and mount options (`docs/LAYOUT.md`)
+- [x] snapshots — [`arcain-snap`](https://github.com/cainbryce/arcain-snap), its own repo
 - [ ] Phase 5 — Secure Boot signing with `sbctl`
+
+## A note on `system/`
+
+`system/` holds state captured off a running machine and is **encrypted at rest**
+with git-crypt. Clone and build without unlocking it — `profile/` is plaintext
+and the ISO does not depend on `system/`. See [docs/SECRETS.md](docs/SECRETS.md).
 
 ## Reference
 
